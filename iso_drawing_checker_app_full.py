@@ -1,120 +1,139 @@
 import streamlit as st
-import os
-import fitz  # PyMuPDF
-import ezdxf
 import pandas as pd
-import matplotlib.pyplot as plt
-from tempfile import NamedTemporaryFile
+import base64
+import fitz  # PyMuPDF
+import os
+import io
+from datetime import datetime
 from fpdf import FPDF
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="ISO Drawing Checker", layout="wide")
+# ---------------------------- CONFIG ----------------------------
+REQUIRED_ITEMS = [
+    ("כותרת", ["title", "כותרת"], 15),
+    ("מספר שרטוט", ["drawing number", "dwg no", "מס' שרטוט"], 15),
+    ("גרסה", ["rev", "revision", "גרסה"], 10),
+    ("שם חלק", ["part name", "שם החלק"], 10),
+    ("קנה מידה", ["scale", "קנ"], 10),
+    ("חתימה", ["approved", "חתימה"], 10),
+    ("תאריך", ["date", "תאריך"], 10),
+    ("יחידות", ["mm", "inch", "unit"], 10),
+    ("שם חברה", ["company", "שם חברה"], 5),
+    ("טבלת מידות", ["dim", "dimensions"], 5)
+]
 
-st.title("📐 ISO Drawing Checker")
-st.markdown("בדיקת שלמות שרטוטים הנדסיים לפי תקני ISO: העלה קבצי PDF או DXF וקבל דוח מסכם, ציון וטבלת בדיקות.")
+ISO_7200_FIELDS = ["title", "drawing number", "revision", "date", "approved"]
+ISO_129_ELEMENTS = ["dimension line", "extension line", "arrowhead", "tolerance"]
+ISO_128_LINES = ["center line", "cutting plane", "hidden line", "section line"]
 
-uploaded_files = st.file_uploader("העלה קבצים (PDF או DXF)", type=["pdf", "dxf"], accept_multiple_files=True)
-
-# קריטריונים לבדיקה
-criteria = {
-    "scale": {"label": "קנה מידה", "keywords": ["scale", 'קנ"מ'], "penalty": 20},
-    "date": {"label": "תאריך", "keywords": ["date", "תאריך"], "penalty": 15},
-    "dimension": {"label": "מידה כללית", "keywords": ["dim", 'מ"מ'], "penalty": 15},
-    "signature": {"label": "חתימה", "keywords": ["sign", "חתימה"], "penalty": 10},
-}
-
-results = []
-
-def analyze_pdf(file):
+# ---------------------------- PDF UTILITIES ----------------------------
+def extract_text_from_pdf(file):
     text = ""
-    doc = fitz.open(file)
-    for page in doc:
-        text += page.get_text()
+    with fitz.open(stream=file.read(), filetype="pdf") as doc:
+        for page in doc:
+            text += page.get_text()
     return text
 
-def analyze_dxf(file):
-    doc = ezdxf.readfile(file)
-    msp = doc.modelspace()
-    dimensions = [e for e in msp if e.dxftype() == 'DIMENSION']
-    return len(dimensions)
+# ---------------------------- ISO CHECKS ----------------------------
+def check_iso_7200(text):
+    missing = [f for f in ISO_7200_FIELDS if f.lower() not in text.lower()]
+    return missing
 
-def check_criteria(text):
-    score = 100
-    report = []
-    for key, info in criteria.items():
-        found = any(keyword.lower() in text.lower() for keyword in info["keywords"])
-        if not found:
-            score -= info["penalty"]
-        report.append({
-            "קריטריון": info["label"],
-            "נמצא?": "✔️" if found else "❌",
-            "הערה": "" if found else f"חסר - הורד {info['penalty']}%"
-        })
-    return score, report
+def check_iso_129(text):
+    found = any(term in text.lower() for term in ISO_129_ELEMENTS)
+    return found
 
-def generate_pdf_report(filename, score, report_data):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=14)
-    pdf.cell(200, 10, txt=f"דוח בדיקה: {filename}", ln=True, align="C")
-    pdf.cell(200, 10, txt=f"ציון סופי: {score}%", ln=True, align="C")
-    pdf.ln(10)
-    for row in report_data:
-        pdf.cell(200, 10, txt=f"{row['קריטריון']}: {row['נמצא?']} - {row['הערה']}", ln=True, align="R")
-    temp_file = NamedTemporaryFile(delete=False, suffix=".pdf")
-    pdf.output(temp_file.name)
-    return temp_file.name
+def check_iso_128(text):
+    found = any(term in text.lower() for term in ISO_128_LINES)
+    return found
+
+# ---------------------------- CHECK LOGIC ----------------------------
+def check_drawing_content(text):
+    text = text.lower()
+    results = []
+    total_score = 0
+    max_score = sum(w for _, _, w in REQUIRED_ITEMS)
+
+    for name, keywords, weight in REQUIRED_ITEMS:
+        found = any(keyword in text for keyword in keywords)
+        score = weight if found else 0
+        results.append({"רכיב": name, "נמצא": "✅" if found else "❌", "משקל": weight, "ציון": score})
+        total_score += score
+
+    percent = int((total_score / max_score) * 100)
+    return results, percent
+
+# ---------------------------- REPORT PDF ----------------------------
+class ReportPDF(FPDF):
+    def header(self):
+        self.set_font("Arial", "B", 14)
+        self.cell(0, 10, "דו"ח בדיקת שרטוט לפי תקן ISO", ln=True, align="C")
+        self.ln(10)
+
+    def add_report(self, filename, table, score, iso7200_miss, iso129_ok, iso128_ok):
+        self.set_font("Arial", size=12)
+        self.cell(0, 10, f"קובץ: {filename} | ציון: {score}%", ln=True)
+        self.ln(5)
+        self.set_font("Arial", size=10)
+        for row in table:
+            self.cell(0, 10, f"{row['רכיב']} - {row['נמצא']} (משקל: {row['משקל']})", ln=True)
+        self.ln(2)
+        self.set_font("Arial", "B", 10)
+        self.cell(0, 10, "בדיקות תקן ISO נוספות:", ln=True)
+        self.set_font("Arial", size=10)
+        self.cell(0, 10, f"ISO 7200 - חסרים שדות: {', '.join(iso7200_miss) if iso7200_miss else '✓'}", ln=True)
+        self.cell(0, 10, f"ISO 129 (סימון מידות): {'✓' if iso129_ok else '✗'}", ln=True)
+        self.cell(0, 10, f"ISO 128 (קווים מוסכמים): {'✓' if iso128_ok else '✗'}", ln=True)
+        self.ln(5)
+
+    def save_pdf(self):
+        pdf_io = io.BytesIO()
+        self.output(pdf_io)
+        pdf_io.seek(0)
+        return pdf_io
+
+# ---------------------------- STREAMLIT UI ----------------------------
+st.set_page_config(page_title="בודק שרטוטים - ISO", layout="wide")
+st.title("📐 בודק שרטוטים לפי תקן ISO")
+st.markdown("העלה קבצי שרטוט (PDF בלבד) כדי לבדוק אם כל הרכיבים הדרושים קיימים.")
+
+uploaded_files = st.file_uploader("בחר קבצי PDF", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
-    st.subheader("📊 תוצאות הבדיקה")
-
-    scores = []
-    summary_table = []
+    report = ReportPDF()
+    all_results = []
+    all_scores = []
 
     for file in uploaded_files:
-        ext = os.path.splitext(file.name)[1].lower()
-        file_path = NamedTemporaryFile(delete=False, suffix=ext)
-        file_path.write(file.read())
-        file_path.close()
+        full_text = extract_text_from_pdf(file)
+        results, score = check_drawing_content(full_text)
+        df = pd.DataFrame(results)
 
-        try:
-            if ext == ".pdf":
-                text = analyze_pdf(file_path.name)
-                score, report = check_criteria(text)
-            elif ext == ".dxf":
-                dim_count = analyze_dxf(file_path.name)
-                score = 100 if dim_count >= 3 else (85 if dim_count > 0 else 70)
-                report = [{
-                    "קריטריון": "קווי מידה",
-                    "נמצא?": "✔️" if dim_count >= 3 else "❌",
-                    "הערה": f"נמצאו {dim_count} קווים"
-                }]
-            else:
-                continue
+        iso7200_miss = check_iso_7200(full_text)
+        iso129_ok = check_iso_129(full_text)
+        iso128_ok = check_iso_128(full_text)
 
-            scores.append({"שם קובץ": file.name, "ציון": score})
-            for row in report:
-                row["קובץ"] = file.name
-                summary_table.append(row)
+        st.subheader(f"📄 {file.name}")
+        st.dataframe(df, use_container_width=True)
+        st.markdown("**בדיקות תקן נוספות:**")
+        st.write(f"🔹 ISO 7200: חסרים שדות: {', '.join(iso7200_miss) if iso7200_miss else '✓ כל השדות קיימים'}")
+        st.write(f"🔹 ISO 129 (מידות): {'✓ נמצא' if iso129_ok else '✗ לא נמצא'}")
+        st.write(f"🔹 ISO 128 (קווים): {'✓ נמצא' if iso128_ok else '✗ לא נמצא'}")
 
-            pdf_path = generate_pdf_report(file.name, score, report)
-            with open(pdf_path, "rb") as f:
-                st.download_button(label=f"הורד דוח PDF עבור {file.name}", data=f.read(),
-                                   file_name=f"{file.name}_report.pdf", mime="application/pdf")
+        report.add_report(file.name, results, score, iso7200_miss, iso129_ok, iso128_ok)
+        all_results.append((file.name, score))
+        all_scores.append(score)
 
-        except Exception as e:
-            st.error(f"שגיאה בקובץ {file.name}: {e}")
-
-    # טבלת סיכום
-    df = pd.DataFrame(summary_table)
-    df = df[["קובץ", "קריטריון", "נמצא?", "הערה"]]
-    st.dataframe(df, use_container_width=True)
-
-    # גרף ציונים
-    st.subheader("📈 גרף ציונים לפי קובץ")
-    scores_df = pd.DataFrame(scores)
+    st.markdown("---")
+    st.subheader("📊 גרף ציונים")
     fig, ax = plt.subplots()
-    ax.bar(scores_df["שם קובץ"], scores_df["ציון"], color='skyblue')
-    ax.set_ylabel("ציון (%)")
-    ax.set_title("ציונים לפי קובץ")
-    ax.set_ylim(0, 100)
+    labels = [name for name, _ in all_results]
+    values = [score for _, score in all_results]
+    ax.barh(labels, values, color='skyblue')
+    ax.set_xlabel("ציון %")
     st.pyplot(fig)
+
+    st.markdown("---")
+    st.subheader("📥 הורדת דוח PDF")
+    pdf_bytes = report.save_pdf()
+    st.download_button("📄 הורד דוח מסכם", pdf_bytes, file_name="iso_report.pdf")
