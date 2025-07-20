@@ -1,81 +1,90 @@
 import streamlit as st
 import fitz  # PyMuPDF
+import pandas as pd
 from fpdf import FPDF
 import os
 
-def check_requirements(text):
-    results = {
-        "כותרת": "title" in text.lower(),
-        "מספר שרטוט": "drawing number" in text.lower(),
-        "חתימה": "signature" in text.lower(),
-        "תאריך": "date" in text.lower(),
-        "מהדורה": "revision" in text.lower(),
-        "כמות יחידות": "quantity" in text.lower(),
-        "שם הכותב": "author" in text.lower(),
-        "טבלת מידות": "dimension table" in text.lower()
-    }
-    return results
-
-def extract_text_from_pdf(pdf_file):
-    text = ""
-    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    for page in doc:
-        text += page.get_text()
-    return text
-
-class ReportPDF(FPDF):
+# הגדרת מחלקה ליצירת דוח PDF
+class HebrewPDF(FPDF):
     def __init__(self):
         super().__init__()
-        self.set_auto_page_break(auto=True, margin=15)
+        self.add_page()
+        self.add_font('Noto', '', 'NotoSansHebrew-Regular.ttf', uni=True)
+        self.set_font('Noto', '', 14)
 
     def header(self):
-        self.set_font("Arial", 'B', 12)
-        self.cell(0, 10, "ISO דוח בדיקה", 0, 1, 'C')
+        self.set_font('Noto', '', 16)
+        self.cell(0, 10, 'דוח בדיקת שרטוט לפי תקן ISO', 0, 1, 'C')
 
-    def footer(self):
-        self.set_y(-15)
-        self.set_font("Arial", 'I', 8)
-        self.cell(0, 10, f"Page {self.page_no()}", 0, 0, 'C')
-
-    def add_result_table(self, filename, results, score):
-        self.add_page()
-        self.set_font("Arial", 'B', 12)
-        self.cell(0, 10, f'קובץ: {filename}', ln=True)
-        self.ln(5)
-        self.set_font("Arial", '', 12)
-
-        for key, value in results.items():
-            result_text = '✓' if value else '✗'
-            self.cell(60, 10, f"{key}", border=1)
-            self.cell(20, 10, result_text, border=1)
+    def add_checklist_table(self, checks):
+        self.set_font('Noto', '', 14)
+        self.ln(10)
+        col_widths = [60, 60]
+        self.cell(col_widths[0], 10, "רכיב", border=1, align='C')
+        self.cell(col_widths[1], 10, "סטטוס", border=1, align='C')
+        self.ln()
+        for label, result in checks:
+            self.cell(col_widths[0], 10, label, border=1, align='R')
+            status = "✓" if result else "✗"
+            self.cell(col_widths[1], 10, status, border=1, align='C')
             self.ln()
 
+    def add_score(self, score):
         self.ln(5)
-        self.set_font("Arial", 'B', 12)
-        self.cell(0, 10, f"ציון: {score}%", ln=True)
+        self.set_font('Noto', '', 12)
+        self.cell(0, 10, f"ציון כולל: {score}%", ln=True, align='R')
 
-st.title("🔍 ISO בודק שרטוטים לפי תקן")
-st.markdown("כדי לוודא שכל הרכיבים הנדרשים קיימים בשרטוט (לפי ISO), העלה קבצי PDF כאן:")
+# פונקציה לבדיקה
+def check_pdf(path):
+    doc = fitz.open(path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    checks = [
+        ("כותרת", "TITLE" in text or "Title" in text),
+        ("מספר שרטוט", "DRAWING NUMBER" in text or "Drawing Number" in text),
+        ("חתימה", "SIGNATURE" in text or "Signature" in text),
+        ("תאריך", "DATE" in text or "Date" in text),
+        ("מהדורה", "REVISION" in text or "Revision" in text),
+        ("כמות יחידות", "UNITS" in text or "Units" in text),
+        ("שם הכותב", "DRAWN BY" in text or "Drawn by" in text),
+        ("טבלת מידות", "DIMENSIONS" in text or "Dimensions" in text),
+    ]
+    return checks
 
-uploaded_files = st.file_uploader("בחר קבצים", type="pdf", accept_multiple_files=True)
+# יצירת דוח
+def create_report(file, checks, score):
+    report = HebrewPDF()
+    report.set_title(file.name)
+    report.add_checklist_table(checks)
+    report.add_score(score)
+    output_filename = file.name.replace(".pdf", "_report.pdf")
+    report.output(output_filename)
+    return output_filename
 
+# אפליקציה
+st.set_page_config(page_title="בודק שרטוטים לפי תקן ISO", layout="wide")
+st.title("📏 ISO בודק שרטוטים לפי תקן")
+st.markdown("כדי לבדוק אם כל הרכיבים הדרושים קיימים בשרטוט (לפי תקן ISO), העלה קובץ PDF.")
+
+uploaded_files = st.file_uploader("Drag and drop files here", accept_multiple_files=True, type=["pdf"])
 if uploaded_files:
-    pdf_report = ReportPDF()
-
     for file in uploaded_files:
-        text = extract_text_from_pdf(file)
-        results = check_requirements(text)
-        total = len(results)
-        passed = sum(results.values())
-        score = round((passed / total) * 100)
-        pdf_report.add_result_table(file.name, results, score)
-
         st.subheader(file.name)
-        st.table({k: '✓' if v else '✗' for k, v in results.items()})
-        st.text(f"ציון כולל: {score}%")
+        with open(file.name, "wb") as f:
+            f.write(file.read())
 
-    report_filename = "iso_check_report.pdf"
-    pdf_report.output(report_filename)
+        checks = check_pdf(file.name)
+        df = pd.DataFrame(checks, columns=["רכיב", "value"])
+        df["value"] = df["value"].apply(lambda x: "✓" if x else "✗")
+        st.table(df)
 
-    with open(report_filename, "rb") as f:
-        st.download_button("📥 הורד דוח PDF מסכם", f, file_name=report_filename)
+        score = int(100 * sum(x[1] for x in checks) / len(checks))
+        st.write(f"**ציון כולל:** {score}%")
+
+        try:
+            report_path = create_report(file, checks, score)
+            with open(report_path, "rb") as pdf_file:
+                st.download_button("📄 הורד דוח PDF", pdf_file, file_name=report_path)
+        except Exception as e:
+            st.error(f"שגיאה ביצירת הדוח: {e}")
