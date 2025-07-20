@@ -40,7 +40,7 @@ if uploaded_file:
                 issues.append("חסר תאריך בטבלה")
                 score -= 15
 
-            if "dim" not in full_text.lower() and "מ"מ" not in full_text:
+            if "dim" not in full_text.lower() and 'מ"מ' not in full_text:
                 issues.append("אין מידה כוללת מזוהה")
                 score -= 15
 
