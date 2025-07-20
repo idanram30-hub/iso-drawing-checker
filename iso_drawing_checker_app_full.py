@@ -3,10 +3,12 @@ import streamlit as st
 import fitz  # PyMuPDF
 import pandas as pd
 import re
+from PIL import Image, ImageDraw
+import io
 
-st.set_page_config(page_title="ISO Drawing Checker with Tag Validation", layout="wide")
-st.title("📏 ISO Drawing Checker with Tag Validation")
-st.markdown("Upload a PDF drawing and compare against expected tag data from CSV.")
+st.set_page_config(page_title="ISO Checker - Visual Tags", layout="wide")
+st.title("📏 ISO Drawing Checker with Visual Overlay")
+st.markdown("Upload a drawing PDF and expected_tags.csv to see visual summary of tag status.")
 
 uploaded_file = st.file_uploader("Upload PDF drawing", type=["pdf"])
 expected_file = st.file_uploader("Upload expected_tags.csv", type=["csv"])
@@ -14,7 +16,6 @@ expected_file = st.file_uploader("Upload expected_tags.csv", type=["csv"])
 if uploaded_file and expected_file:
     expected_df = pd.read_csv(expected_file)
     expected_tags = expected_df["TAG"].tolist()
-
     tag_requirements = expected_df.set_index("TAG").to_dict("index")
 
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -49,4 +50,19 @@ if uploaded_file and expected_file:
 
     df = pd.DataFrame(results)
     st.dataframe(df)
-    st.markdown("✅ **Check complete**. Missing data will be shown in the 'Status' column.")
+
+    # Render image of page 1
+    page = doc.load_page(0)
+    pix = page.get_pixmap(dpi=150)
+    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    # Draw missing items
+    offset = 10
+    for row in results:
+        if row["Status"] != "OK":
+            draw.text((10, offset), f"Missing in {row['TAG']}: {', '.join([k for k in ['X', 'Y', 'SIZE'] if row[k]=='MISSING'])}", fill="red")
+            offset += 18
+
+    st.image(img, caption="Annotated Drawing with Missing Tags", use_column_width=True)
+    st.markdown("✅ Visual overlay complete. Missing fields shown in red.")
