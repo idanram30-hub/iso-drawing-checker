@@ -1,0 +1,76 @@
+import streamlit as st
+import fitz  # PyMuPDF
+from fpdf import FPDF
+
+# מחלקת PDF עם תמיכה בעברית
+class ReportPDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        self.add_page()
+        self.add_font("Noto", "", "NotoSansHebrew-Regular.ttf", uni=True)
+        self.set_font("Noto", size=12)
+
+    def add_result_table(self, filename, results, score):
+        self.set_font("Noto", size=12)
+        self.cell(0, 10, txt=f"קובץ: {filename}", ln=True)
+        self.ln(5)
+
+        for key, value in results.items():
+            result_text = '✓' if value else '✗'
+            self.cell(60, 10, txt=key[::-1], border=1)  # היפוך תווים להצגה RTL
+            self.cell(20, 10, txt=result_text, border=1)
+            self.ln()
+
+        self.ln(5)
+        self.set_font("Noto", "B", 12)
+        self.cell(0, 10, txt=f"ציון כולל: {score}%", ln=True)
+
+# פונקציה לקריאת טקסט מה-PDF
+def extract_text_from_pdf(file):
+    text = ""
+    doc = fitz.open(stream=file.read(), filetype="pdf")
+    for page in doc:
+        text += page.get_text()
+    return text
+
+# פונקציה לבדיקה מול דרישות ISO בסיסיות
+def check_requirements(text):
+    text = text.lower()
+    results = {
+        "כותרת": "title" in text,
+        "מספר שרטוט": "drawing number" in text,
+        "חתימה": "signature" in text,
+        "תאריך": "date" in text,
+        "מהדורה": "revision" in text,
+        "כמות יחידות": "quantity" in text,
+        "שם הכותב": "author" in text,
+        "טבלת מידות": "dimension table" in text
+    }
+    return results
+
+# ממשק משתמש
+st.title("📐 ISO בודק שרטוטים לפי תקן")
+st.markdown("כדי לוודא שכל הרכיבים הנדרשים קיימים בשרטוט (לפי ISO), העלה קבצי PDF")
+
+uploaded_files = st.file_uploader("בחר קבצי PDF", type="pdf", accept_multiple_files=True)
+
+if uploaded_files:
+    pdf = ReportPDF()
+
+    for file in uploaded_files:
+        text = extract_text_from_pdf(file)
+        results = check_requirements(text)
+        score = round(100 * sum(results.values()) / len(results))
+
+        pdf.add_result_table(file.name, results, score)
+
+        st.subheader(file.name)
+        st.table({k: '✓' if v else '✗' for k, v in results.items()})
+        st.markdown(f"**ציון כולל:** {score}%")
+
+    # הפקת הדוח
+    report_file = "iso_check_report.pdf"
+    pdf.output(report_file)
+
+    with open(report_file, "rb") as f:
+        st.download_button("📥 הורד דוח PDF מסכם", f, file_name=report_file)
