@@ -67,7 +67,7 @@ def check_drawing_content(text):
 class ReportPDF(FPDF):
     def header(self):
         self.set_font("Arial", "B", 14)
-        self.cell(0, 10, "דו"ח בדיקת שרטוט לפי תקן ISO", ln=True, align="C")
+        self.cell(0, 10, 'דו"ח בדיקת שרטוט לפי תקן ISO', ln=True, align="C")
         self.ln(10)
 
     def add_report(self, filename, table, score, iso7200_miss, iso129_ok, iso128_ok):
