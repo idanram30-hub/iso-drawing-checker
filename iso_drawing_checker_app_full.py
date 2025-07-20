@@ -3,7 +3,8 @@ import streamlit as st
 import fitz  # PyMuPDF
 import pandas as pd
 from fpdf import FPDF
-import os
+from PIL import Image, ImageDraw, ImageFont
+import io
 
 # PDF report generator
 class ReportPDF(FPDF):
@@ -33,23 +34,39 @@ class ReportPDF(FPDF):
         self.set_font('Arial', 'B', 12)
         self.cell(0, 10, f"Overall Score: {score}%", ln=True)
 
-# Perform checks on PDF content
+# Perform checks on PDF content and generate annotated images
 def check_pdf(path):
     doc = fitz.open(path)
     text = ""
-    for page in doc:
+    annotated_images = []
+
+    for i, page in enumerate(doc):
         text += page.get_text()
-    checks = [
-        ("Title", "TITLE" in text or "Title" in text),
-        ("Drawing Number", "DRAWING NUMBER" in text or "Drawing Number" in text),
-        ("Signature", "SIGNATURE" in text or "Signature" in text),
-        ("Date", "DATE" in text or "Date" in text),
-        ("Revision", "REVISION" in text or "Revision" in text),
-        ("Quantity", "QUANTITY" in text or "Quantity" in text),
-        ("Author", "DRAWN BY" in text or "Drawn by" in text),
-        ("Dimensions Table", "DIMENSIONS" in text or "Dimensions" in text),
-    ]
-    return checks
+        pix = page.get_pixmap(dpi=150)
+        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+        draw = ImageDraw.Draw(img)
+
+        # Placeholder annotation: mark upper-left with missing items
+        checks = [
+            ("Title", "TITLE" in text or "Title" in text),
+            ("Drawing Number", "DRAWING NUMBER" in text or "Drawing Number" in text),
+            ("Signature", "SIGNATURE" in text or "Signature" in text),
+            ("Date", "DATE" in text or "Date" in text),
+            ("Revision", "REVISION" in text or "Revision" in text),
+            ("Quantity", "QUANTITY" in text or "Quantity" in text),
+            ("Author", "DRAWN BY" in text or "Drawn by" in text),
+            ("Dimensions Table", "DIMENSIONS" in text or "Dimensions" in text),
+        ]
+
+        missing = [label for label, result in checks if not result]
+        y_offset = 10
+        for label in missing:
+            draw.text((10, y_offset), f"Missing: {label}", fill="red")
+            y_offset += 15
+
+        annotated_images.append((img, checks))
+
+    return annotated_images
 
 # Create PDF report
 def create_report(file, checks, score):
@@ -62,9 +79,9 @@ def create_report(file, checks, score):
     return output_filename
 
 # Streamlit app
-st.set_page_config(page_title="ISO Drawing Checker", layout="wide")
-st.title("📏 ISO Drawing Checker")
-st.markdown("Upload one or more PDF files to check if all required items exist according to ISO standard.")
+st.set_page_config(page_title="ISO Drawing Checker - Annotated", layout="wide")
+st.title("📏 ISO Drawing Checker with Annotation")
+st.markdown("Upload one or more PDF drawings to get auto-check with visual feedback.")
 
 uploaded_files = st.file_uploader("Upload PDF files", accept_multiple_files=True, type=["pdf"])
 if uploaded_files:
@@ -73,17 +90,20 @@ if uploaded_files:
         with open(file.name, "wb") as f:
             f.write(file.read())
 
-        checks = check_pdf(file.name)
-        df = pd.DataFrame(checks, columns=["Item", "Status"])
-        df["Status"] = df["Status"].apply(lambda x: "✓" if x else "✗")
-        st.table(df)
+        annotated_images = check_pdf(file.name)
+        for img, checks in annotated_images:
+            df = pd.DataFrame(checks, columns=["Item", "Status"])
+            df["Status"] = df["Status"].apply(lambda x: "✓" if x else "✗")
+            st.table(df)
 
-        score = int(100 * sum(x[1] for x in checks) / len(checks))
-        st.write(f"**Overall Score:** {score}%")
+            score = int(100 * sum(x[1] for x in checks) / len(checks))
+            st.write(f"**Overall Score:** {score}%")
 
-        try:
-            report_path = create_report(file, checks, score)
-            with open(report_path, "rb") as pdf_file:
-                st.download_button("📄 Download PDF Report", pdf_file, file_name=report_path)
-        except Exception as e:
-            st.error(f"Report generation failed: {e}")
+            st.image(img, caption="Annotated Drawing", use_column_width=True)
+
+            try:
+                report_path = create_report(file, checks, score)
+                with open(report_path, "rb") as pdf_file:
+                    st.download_button("📄 Download PDF Report", pdf_file, file_name=report_path)
+            except Exception as e:
+                st.error(f"Report generation failed: {e}")
