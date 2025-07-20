@@ -1,6 +1,0 @@
-streamlit
-pymupdf
-ezdxf
-fpdf
-matplotlib
-pandas
