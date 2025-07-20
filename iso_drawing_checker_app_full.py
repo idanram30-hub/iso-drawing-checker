@@ -2,108 +2,51 @@
 import streamlit as st
 import fitz  # PyMuPDF
 import pandas as pd
-from fpdf import FPDF
-from PIL import Image, ImageDraw, ImageFont
-import io
+import re
 
-# PDF report generator
-class ReportPDF(FPDF):
-    def __init__(self):
-        super().__init__()
-        self.add_page()
-        self.set_font('Arial', '', 12)
+st.set_page_config(page_title="ISO Drawing Checker with Tag Validation", layout="wide")
+st.title("📏 ISO Drawing Checker with Tag Validation")
+st.markdown("Upload a PDF drawing and compare against expected tag data from CSV.")
 
-    def header(self):
-        self.set_font('Arial', 'B', 14)
-        self.cell(0, 10, 'Drawing ISO Check Report', 0, 1, 'C')
+uploaded_file = st.file_uploader("Upload PDF drawing", type=["pdf"])
+expected_file = st.file_uploader("Upload expected_tags.csv", type=["csv"])
 
-    def add_checklist_table(self, checks):
-        self.ln(10)
-        col_widths = [70, 30]
-        self.cell(col_widths[0], 10, "Item", border=1, align='C')
-        self.cell(col_widths[1], 10, "Status", border=1, align='C')
-        self.ln()
-        for label, result in checks:
-            status = "✓" if result else "✗"
-            self.cell(col_widths[0], 10, label, border=1)
-            self.cell(col_widths[1], 10, status, border=1, align='C')
-            self.ln()
+if uploaded_file and expected_file:
+    expected_df = pd.read_csv(expected_file)
+    expected_tags = expected_df["TAG"].tolist()
 
-    def add_score(self, score):
-        self.ln(5)
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, f"Overall Score: {score}%", ln=True)
+    tag_requirements = expected_df.set_index("TAG").to_dict("index")
 
-# Perform checks on PDF content and generate annotated images
-def check_pdf(path):
-    doc = fitz.open(path)
+    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     text = ""
-    annotated_images = []
-
-    for i, page in enumerate(doc):
+    for page in doc:
         text += page.get_text()
-        pix = page.get_pixmap(dpi=150)
-        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-        draw = ImageDraw.Draw(img)
 
-        # Placeholder annotation: mark upper-left with missing items
-        checks = [
-            ("Title", "TITLE" in text or "Title" in text),
-            ("Drawing Number", "DRAWING NUMBER" in text or "Drawing Number" in text),
-            ("Signature", "SIGNATURE" in text or "Signature" in text),
-            ("Date", "DATE" in text or "Date" in text),
-            ("Revision", "REVISION" in text or "Revision" in text),
-            ("Quantity", "QUANTITY" in text or "Quantity" in text),
-            ("Author", "DRAWN BY" in text or "Drawn by" in text),
-            ("Dimensions Table", "DIMENSIONS" in text or "Dimensions" in text),
-        ]
+    found_tags = {}
+    lines = text.splitlines()
+    for line in lines:
+        parts = line.strip().split()
+        if parts and parts[0] in expected_tags:
+            tag = parts[0]
+            found_tags[tag] = {
+                "X": parts[1] if len(parts) > 1 else "",
+                "Y": parts[2] if len(parts) > 2 else "",
+                "SIZE": parts[3] if len(parts) > 3 else ""
+            }
 
-        missing = [label for label, result in checks if not result]
-        y_offset = 10
-        for label in missing:
-            draw.text((10, y_offset), f"Missing: {label}", fill="red")
-            y_offset += 15
+    results = []
+    for tag in expected_tags:
+        row = {"TAG": tag}
+        found = found_tags.get(tag, {})
+        x_ok = bool(found.get("X")) if tag_requirements[tag]["X_required"] else True
+        y_ok = bool(found.get("Y")) if tag_requirements[tag]["Y_required"] else True
+        s_ok = bool(found.get("SIZE")) if tag_requirements[tag]["SIZE_required"] else True
+        row["X"] = found.get("X", "MISSING")
+        row["Y"] = found.get("Y", "MISSING")
+        row["SIZE"] = found.get("SIZE", "MISSING")
+        row["Status"] = "OK" if all([x_ok, y_ok, s_ok]) else "MISSING DATA"
+        results.append(row)
 
-        annotated_images.append((img, checks))
-
-    return annotated_images
-
-# Create PDF report
-def create_report(file, checks, score):
-    report = ReportPDF()
-    report.set_title(file.name)
-    report.add_checklist_table(checks)
-    report.add_score(score)
-    output_filename = file.name.replace(".pdf", "_report.pdf")
-    report.output(output_filename)
-    return output_filename
-
-# Streamlit app
-st.set_page_config(page_title="ISO Drawing Checker - Annotated", layout="wide")
-st.title("📏 ISO Drawing Checker with Annotation")
-st.markdown("Upload one or more PDF drawings to get auto-check with visual feedback.")
-
-uploaded_files = st.file_uploader("Upload PDF files", accept_multiple_files=True, type=["pdf"])
-if uploaded_files:
-    for file in uploaded_files:
-        st.subheader(file.name)
-        with open(file.name, "wb") as f:
-            f.write(file.read())
-
-        annotated_images = check_pdf(file.name)
-        for img, checks in annotated_images:
-            df = pd.DataFrame(checks, columns=["Item", "Status"])
-            df["Status"] = df["Status"].apply(lambda x: "✓" if x else "✗")
-            st.table(df)
-
-            score = int(100 * sum(x[1] for x in checks) / len(checks))
-            st.write(f"**Overall Score:** {score}%")
-
-            st.image(img, caption="Annotated Drawing", use_column_width=True)
-
-            try:
-                report_path = create_report(file, checks, score)
-                with open(report_path, "rb") as pdf_file:
-                    st.download_button("📄 Download PDF Report", pdf_file, file_name=report_path)
-            except Exception as e:
-                st.error(f"Report generation failed: {e}")
+    df = pd.DataFrame(results)
+    st.dataframe(df)
+    st.markdown("✅ **Check complete**. Missing data will be shown in the 'Status' column.")
